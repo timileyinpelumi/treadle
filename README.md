@@ -35,6 +35,16 @@ await worker.start();
 Bun.serve({ port: 3000, fetch: dashboard(sql, { basePath: "/admin/jobs" }) });
 ```
 
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [Concepts](docs/concepts.md): the guarantees and what they ask of your handlers
+- [Use cases](docs/use-cases/README.md): signup emails, webhooks, withdrawals, order fulfilment, periodic jobs, media, bulk import, rate-limited APIs, multi-tenant work, each with a runnable example
+- [Operations](docs/operations.md): running workers in production
+- [API reference](docs/api.md)
+- [When to use it, and when not to](docs/comparison.md)
+- [Changelog](CHANGELOG.md)
+
 ## What it guarantees
 
 - A job enqueued inside a transaction runs at least once if that transaction commits, and never if it rolls back. The jobs table is the transactional outbox.

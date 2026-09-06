@@ -71,7 +71,7 @@ export interface StartWorkflowOptions {
 
 export interface Step<I = any> {
   name: string;
-  run: (input: I, results: Record<string, unknown>, ctx: JobContext) => Promise<unknown> | unknown;
+  run: (input: I, results: Record<string, any>, ctx: JobContext) => Promise<unknown> | unknown;
 }
 
 export type WorkerEvent = "claimed" | "finishing" | "completed" | "failed" | "stepFinished" | "leaseLost";
