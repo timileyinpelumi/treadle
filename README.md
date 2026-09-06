@@ -2,7 +2,7 @@
 
 Background jobs and step workflows for Bun and Postgres.
 
-Status: milestone 6 of 7. Library complete with crash point tests and load scripts. Case study and publish remain. See `docs/scope.md`.
+Status: milestone 6 of 7. Library complete with crash point tests and load scripts. Case study and publish remain.
 
 ## Develop
 
