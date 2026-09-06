@@ -28,7 +28,7 @@ test("overview returns counts, per-minute series, failures, and runs", async () 
   await sql.begin((tx) => treadle.startWorkflow(tx, "wf", {}));
   const res = await handle(req("/api/overview"));
   expect(res.status).toBe(200);
-  const body = await res.json();
+  const body = (await res.json()) as { counts: unknown; perMinute: { state: string }[]; failures: unknown[]; runs: unknown[] };
   expect(body.counts).toEqual([
     { queue: "default", state: "available", n: 1 },
     { queue: "default", state: "discarded", n: 1 },
