@@ -2,7 +2,7 @@
 
 Background jobs and step workflows for Bun and Postgres.
 
-Status: milestone 1 of 7. Enqueue works. Workers do not exist yet. See `docs/scope.md`.
+Status: milestone 2 of 7. Enqueue and workers work. No retries with backoff, no workflows, no dashboard yet. See `docs/scope.md`.
 
 ## Develop
 
