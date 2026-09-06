@@ -35,8 +35,14 @@ export class Treadle {
         ${options.idempotencyKey ?? null},
         ${options.every ?? null}
       )
+      on conflict (idempotency_key) where idempotency_key is not null do nothing
       returning id::text as id`;
 
-    return rows[0]!.id as string;
+    if (rows.length > 0) return rows[0]!.id as string;
+
+    const existing = await tx`
+      select id::text as id from treadle.jobs
+      where idempotency_key = ${options.idempotencyKey!}`;
+    return existing[0]!.id as string;
   }
 }
