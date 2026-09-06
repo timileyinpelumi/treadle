@@ -20,6 +20,7 @@ export const migrations: ReadonlyArray<{ version: number; sql: string }> = [
         workflow_run_id  bigint,
         step_index       smallint,
         last_error       text,
+        cancel_requested boolean not null default false,
         created_at       timestamptz not null default now(),
         started_at       timestamptz,
         finished_at      timestamptz

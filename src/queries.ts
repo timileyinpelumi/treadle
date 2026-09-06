@@ -41,13 +41,31 @@ function toPgArray(items: string[]): string {
   return "{" + items.map((s) => '"' + s.replace(/(["\\])/g, "\\$1") + '"').join(",") + "}";
 }
 
-export async function completeJob(sql: Sql, jobId: string, workerId: string): Promise<boolean> {
-  const rows = await sql`
-    update treadle.jobs
-    set state = 'completed', finished_at = now(), lease_until = null, worker_id = null
-    where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+export type FinalState = "completed" | "retryable" | "discarded" | "cancelled";
+
+interface Finished {
+  state: FinalState;
+  every_ms: number | null;
+  queue: string;
+  name: string;
+  args: unknown;
+  priority: number;
+  max_attempts: number;
+}
+
+export async function completeJob(sql: Sql, jobId: string, workerId: string): Promise<FinalState | null> {
+  return sql.begin(async (tx) => {
+    const rows = await tx`
+      update treadle.jobs
+      set state = case when cancel_requested then 'cancelled' else 'completed' end,
+          finished_at = now(), lease_until = null, worker_id = null
+      where id = ${jobId} and state = 'running' and worker_id = ${workerId}
+      returning state, every_ms, queue, name, args, priority, max_attempts`;
+    const done = rows[0] as Finished | undefined;
+    if (!done) return null;
+    await scheduleNext(tx, done);
+    return done.state;
+  });
 }
 
 export async function failJob(
@@ -55,15 +73,30 @@ export async function failJob(
   jobId: string,
   workerId: string,
   error: string,
-  runAt: Date,
-): Promise<boolean> {
-  const rows = await sql`
-    update treadle.jobs
-    set state = 'retryable', last_error = ${error}, run_at = ${runAt},
-        lease_until = null, worker_id = null
-    where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+  backoffMs: number,
+): Promise<FinalState | null> {
+  return sql.begin(async (tx) => {
+    const rows = await tx`
+      update treadle.jobs
+      set state = case
+            when cancel_requested then 'cancelled'
+            when attempt >= max_attempts then 'discarded'
+            else 'retryable' end,
+          last_error = ${error},
+          run_at = case
+            when cancel_requested or attempt >= max_attempts then run_at
+            else now() + (${backoffMs} * interval '1 millisecond') end,
+          finished_at = case
+            when cancel_requested or attempt >= max_attempts then now()
+            else null end,
+          lease_until = null, worker_id = null
+      where id = ${jobId} and state = 'running' and worker_id = ${workerId}
+      returning state, every_ms, queue, name, args, priority, max_attempts`;
+    const done = rows[0] as Finished | undefined;
+    if (!done) return null;
+    await scheduleNext(tx, done);
+    return done.state;
+  });
 }
 
 export async function extendLease(
@@ -71,20 +104,43 @@ export async function extendLease(
   jobId: string,
   workerId: string,
   leaseMs: number,
-): Promise<boolean> {
+): Promise<{ held: boolean; cancelRequested: boolean }> {
   const rows = await sql`
     update treadle.jobs
     set lease_until = now() + (${leaseMs} * interval '1 millisecond')
     where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+    returning cancel_requested`;
+  const row = rows[0] as { cancel_requested: boolean } | undefined;
+  return { held: row !== undefined, cancelRequested: row?.cancel_requested ?? false };
 }
 
 export async function rescueExpired(sql: Sql): Promise<number> {
-  const rows = await sql`
-    update treadle.jobs
-    set state = 'retryable', lease_until = null, worker_id = null, last_error = 'lease expired'
-    where state = 'running' and lease_until < now()
-    returning id`;
-  return rows.length;
+  return sql.begin(async (tx) => {
+    const rows = await tx`
+      update treadle.jobs
+      set state = case
+            when cancel_requested then 'cancelled'
+            when attempt >= max_attempts then 'discarded'
+            else 'retryable' end,
+          finished_at = case
+            when cancel_requested or attempt >= max_attempts then now()
+            else finished_at end,
+          -- the worker died, the job did not fail, so no backoff
+          run_at = now(),
+          lease_until = null, worker_id = null, last_error = 'lease expired'
+      where state = 'running' and lease_until < now()
+      returning state, every_ms, queue, name, args, priority, max_attempts`;
+    for (const done of rows as Finished[]) await scheduleNext(tx, done);
+    return rows.length;
+  });
+}
+
+async function scheduleNext(tx: Sql, done: Finished): Promise<void> {
+  if (done.every_ms === null) return;
+  if (done.state !== "completed" && done.state !== "discarded") return;
+  await tx`
+    insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+    values (${done.queue}, ${done.name}, ${done.args ?? {}}::jsonb, ${done.priority},
+            ${done.max_attempts}, ${done.every_ms},
+            now() + (${done.every_ms} * interval '1 millisecond'))`;
 }

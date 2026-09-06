@@ -107,12 +107,12 @@ export class Worker {
     }, this.options.heartbeatMs);
     try {
       await handler(job.args, ctx);
-      const ok = await completeJob(this.sql, job.id, this.id);
-      if (!ok) this.options.onError(new Error("lease lost before completion"), job);
+      const state = await completeJob(this.sql, job.id, this.id);
+      if (state === null) this.options.onError(new Error("lease lost before completion"), job);
     } catch (error) {
       this.options.onError(error, job);
       const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-      await failJob(this.sql, job.id, this.id, message, new Date(Date.now() + RETRY_DELAY_MS))
+      await failJob(this.sql, job.id, this.id, message, RETRY_DELAY_MS)
         .catch((e) => this.options.onError(e, job));
     } finally {
       clearInterval(beat);
@@ -120,8 +120,10 @@ export class Worker {
   }
 
   private async heartbeat(job: Job, abort: AbortController): Promise<void> {
-    const ok = await extendLease(this.sql, job.id, this.id, this.options.leaseMs);
-    if (!ok && !abort.signal.aborted) abort.abort(new Error("lease lost"));
+    const { held, cancelRequested } = await extendLease(this.sql, job.id, this.id, this.options.leaseMs);
+    if (abort.signal.aborted) return;
+    if (!held) abort.abort(new Error("lease lost"));
+    else if (cancelRequested) abort.abort(new Error("cancelled"));
   }
 
   private sleep(ms: number): Promise<void> {
