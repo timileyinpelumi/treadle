@@ -3,20 +3,45 @@
   "version": "0.1.0",
   "description": "Background jobs and step workflows for Bun and Postgres",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "types": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "license": "MIT",
+  "author": "timileyindev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/timileyinpelumi/treadle.git"
+  },
+  "homepage": "https://github.com/timileyinpelumi/treadle",
+  "keywords": [
+    "bun",
+    "postgres",
+    "job-queue",
+    "background-jobs",
+    "workflow",
+    "outbox",
+    "skip-locked"
+  ],
+  "engines": {
+    "bun": ">=1.3.0"
+  },
   "scripts": {
     "test": "bun test --timeout 20000",
     "typecheck": "bunx tsc --noEmit",
     "load": "bun scripts/load.ts",
-    "claim-latency": "bun scripts/claim-latency.ts"
+    "claim-latency": "bun scripts/claim-latency.ts",
+    "recovery": "bun scripts/recovery.ts",
+    "storm": "bun scripts/storm.ts",
+    "prepublishOnly": "bun test && bun run typecheck"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",
     "typescript": "^5.6.0"
-  },
-  "engines": {
-    "bun": ">=1.3.0"
   }
 }
