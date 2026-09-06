@@ -67,7 +67,7 @@ export async function stepDone(
   await sql`
     with saved as (
       insert into treadle.step_results (workflow_run_id, step_index, result)
-      values (${args.runId}::bigint, ${args.stepIndex}::int, ${args.result ?? null}::jsonb)
+      values (${args.runId}::bigint, ${args.stepIndex}::int, ${JSON.stringify(args.result ?? null)}::text::jsonb)
       on conflict do nothing
     ), enqueued as (
       insert into treadle.jobs

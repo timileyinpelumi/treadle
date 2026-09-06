@@ -2,7 +2,10 @@ import { hostname } from "node:os";
 import { defaultBackoff } from "./backoff";
 import { claimJobs, completeJob, extendLease, failJob, rescueExpired } from "./queries";
 import type { Sql } from "./sql";
-import type { Handler, Job, JobContext, WorkerOptions } from "./types";
+import type { Handler, Job, JobContext, Step, WorkerOptions } from "./types";
+import { loadRun, stepDone, workflowJobName } from "./workflows";
+
+type InternalHandler = (job: Job, ctx: JobContext) => Promise<unknown>;
 
 export class Worker {
   readonly id: string;
@@ -11,7 +14,7 @@ export class Worker {
     onError: (error: unknown, job?: Job) => void;
   };
 
-  private handlers = new Map<string, Handler>();
+  private handlers = new Map<string, InternalHandler>();
   private inflight = new Map<string, Promise<void>>();
   private running = false;
   private loop: Promise<void> | null = null;
@@ -34,9 +37,50 @@ export class Worker {
   }
 
   register(name: string, handler: Handler): this {
-    if (this.running) throw new Error("register: cannot register handlers after start");
-    this.handlers.set(name, handler);
+    this.assertNotRunning();
+    this.handlers.set(name, async (job, ctx) => handler(job.args, ctx));
     return this;
+  }
+
+  registerWorkflow(name: string, steps: Step[]): this {
+    this.assertNotRunning();
+    if (steps.length === 0) throw new Error("registerWorkflow: a workflow needs at least one step");
+    if (new Set(steps.map((s) => s.name)).size !== steps.length) {
+      throw new Error("registerWorkflow: step names must be unique");
+    }
+    this.handlers.set(workflowJobName(name), (job, ctx) => this.runStep(steps, job, ctx));
+    return this;
+  }
+
+  private assertNotRunning(): void {
+    if (this.running) throw new Error("cannot register handlers after start");
+  }
+
+  private async runStep(steps: Step[], job: Job, ctx: JobContext): Promise<void> {
+    const runId = job.workflow_run_id!;
+    const index = job.step_index!;
+    const step = steps[index];
+    if (!step) throw new Error(`workflow step ${index} is not defined`);
+    const run = await loadRun(this.sql, runId);
+    if (!run) throw new Error(`workflow run ${runId} not found`);
+    if (run.state !== "running") return;
+
+    let result: unknown;
+    if (run.results.has(index)) {
+      // The step finished before a crash but its job was never marked done. Do not run it again.
+      result = run.results.get(index);
+    } else {
+      const results: Record<string, unknown> = {};
+      for (let i = 0; i < index; i++) results[steps[i]!.name] = run.results.get(i);
+      result = await step.run(run.input, results, ctx);
+    }
+    await stepDone(this.sql, {
+      runId,
+      jobId: job.id,
+      stepIndex: index,
+      result: result === undefined ? null : result,
+      isLast: index === steps.length - 1,
+    });
   }
 
   async start(): Promise<void> {
@@ -107,7 +151,7 @@ export class Worker {
       ctx.heartbeat().catch((e) => this.options.onError(e, job));
     }, this.options.heartbeatMs);
     try {
-      await handler(job.args, ctx);
+      await handler(job, ctx);
       const state = await completeJob(this.sql, job.id, this.id);
       if (state === null) this.options.onError(new Error("lease lost before completion"), job);
     } catch (error) {
