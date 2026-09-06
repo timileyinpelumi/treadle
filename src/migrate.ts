@@ -13,7 +13,7 @@ export async function migrate(sql: Sql): Promise<void> {
     // Serialise concurrent migrate calls from several workers starting at once.
     await tx`select pg_advisory_xact_lock(7231001)`;
     const applied = new Set(
-      (await tx`select version from treadle.migrations`).map((r) => Number(r.version)),
+      (await tx`select version from treadle.migrations`).map((r: { version: number }) => r.version),
     );
     for (const m of migrations) {
       if (applied.has(m.version)) continue;
