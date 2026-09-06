@@ -43,29 +43,25 @@ function toPgArray(items: string[]): string {
 
 export type FinalState = "completed" | "retryable" | "discarded" | "cancelled";
 
-interface Finished {
-  state: FinalState;
-  every_ms: number | null;
-  queue: string;
-  name: string;
-  args: unknown;
-  priority: number;
-  max_attempts: number;
-}
-
+// Finishing is one statement: the update and, for periodic jobs, the insert of the
+// next occurrence run as data-modifying CTEs and commit together. Wrapping these in
+// sql.begin instead made Bun's pool hand one caller another caller's rows under load.
 export async function completeJob(sql: Sql, jobId: string, workerId: string): Promise<FinalState | null> {
-  return sql.begin(async (tx) => {
-    const rows = await tx`
+  const rows = await sql`
+    with done as (
       update treadle.jobs
       set state = case when cancel_requested then 'cancelled' else 'completed' end,
           finished_at = now(), lease_until = null, worker_id = null
       where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-      returning state, every_ms, queue, name, args, priority, max_attempts`;
-    const done = rows[0] as Finished | undefined;
-    if (!done) return null;
-    await scheduleNext(tx, done);
-    return done.state;
-  });
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'completed'
+    )
+    select state from done`;
+  return (rows[0]?.state as FinalState | undefined) ?? null;
 }
 
 export async function failJob(
@@ -75,8 +71,8 @@ export async function failJob(
   error: string,
   backoffMs: number,
 ): Promise<FinalState | null> {
-  return sql.begin(async (tx) => {
-    const rows = await tx`
+  const rows = await sql`
+    with done as (
       update treadle.jobs
       set state = case
             when cancel_requested then 'cancelled'
@@ -91,12 +87,15 @@ export async function failJob(
             else null end,
           lease_until = null, worker_id = null
       where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-      returning state, every_ms, queue, name, args, priority, max_attempts`;
-    const done = rows[0] as Finished | undefined;
-    if (!done) return null;
-    await scheduleNext(tx, done);
-    return done.state;
-  });
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'discarded'
+    )
+    select state from done`;
+  return (rows[0]?.state as FinalState | undefined) ?? null;
 }
 
 export async function extendLease(
@@ -115,8 +114,8 @@ export async function extendLease(
 }
 
 export async function rescueExpired(sql: Sql): Promise<number> {
-  return sql.begin(async (tx) => {
-    const rows = await tx`
+  const rows = await sql`
+    with done as (
       update treadle.jobs
       set state = case
             when cancel_requested then 'cancelled'
@@ -129,18 +128,13 @@ export async function rescueExpired(sql: Sql): Promise<number> {
           run_at = now(),
           lease_until = null, worker_id = null, last_error = 'lease expired'
       where state = 'running' and lease_until < now()
-      returning state, every_ms, queue, name, args, priority, max_attempts`;
-    for (const done of rows as Finished[]) await scheduleNext(tx, done);
-    return rows.length;
-  });
-}
-
-async function scheduleNext(tx: Sql, done: Finished): Promise<void> {
-  if (done.every_ms === null) return;
-  if (done.state !== "completed" && done.state !== "discarded") return;
-  await tx`
-    insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
-    values (${done.queue}, ${done.name}, ${done.args ?? {}}::jsonb, ${done.priority},
-            ${done.max_attempts}, ${done.every_ms},
-            now() + (${done.every_ms} * interval '1 millisecond'))`;
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'discarded'
+    )
+    select count(*)::int as n from done`;
+  return (rows[0]?.n as number) ?? 0;
 }
