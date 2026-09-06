@@ -41,13 +41,27 @@ function toPgArray(items: string[]): string {
   return "{" + items.map((s) => '"' + s.replace(/(["\\])/g, "\\$1") + '"').join(",") + "}";
 }
 
-export async function completeJob(sql: Sql, jobId: string, workerId: string): Promise<boolean> {
+export type FinalState = "completed" | "retryable" | "discarded" | "cancelled";
+
+// Finishing is one statement: the update and, for periodic jobs, the insert of the
+// next occurrence run as data-modifying CTEs and commit together. Wrapping these in
+// sql.begin instead made Bun's pool hand one caller another caller's rows under load.
+export async function completeJob(sql: Sql, jobId: string, workerId: string): Promise<FinalState | null> {
   const rows = await sql`
-    update treadle.jobs
-    set state = 'completed', finished_at = now(), lease_until = null, worker_id = null
-    where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+    with done as (
+      update treadle.jobs
+      set state = case when cancel_requested then 'cancelled' else 'completed' end,
+          finished_at = now(), lease_until = null, worker_id = null
+      where id = ${jobId} and state = 'running' and worker_id = ${workerId}
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'completed'
+    )
+    select state from done`;
+  return (rows[0]?.state as FinalState | undefined) ?? null;
 }
 
 export async function failJob(
@@ -55,15 +69,33 @@ export async function failJob(
   jobId: string,
   workerId: string,
   error: string,
-  runAt: Date,
-): Promise<boolean> {
+  backoffMs: number,
+): Promise<FinalState | null> {
   const rows = await sql`
-    update treadle.jobs
-    set state = 'retryable', last_error = ${error}, run_at = ${runAt},
-        lease_until = null, worker_id = null
-    where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+    with done as (
+      update treadle.jobs
+      set state = case
+            when cancel_requested then 'cancelled'
+            when attempt >= max_attempts then 'discarded'
+            else 'retryable' end,
+          last_error = ${error},
+          run_at = case
+            when cancel_requested or attempt >= max_attempts then run_at
+            else now() + (${backoffMs} * interval '1 millisecond') end,
+          finished_at = case
+            when cancel_requested or attempt >= max_attempts then now()
+            else null end,
+          lease_until = null, worker_id = null
+      where id = ${jobId} and state = 'running' and worker_id = ${workerId}
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'discarded'
+    )
+    select state from done`;
+  return (rows[0]?.state as FinalState | undefined) ?? null;
 }
 
 export async function extendLease(
@@ -71,20 +103,38 @@ export async function extendLease(
   jobId: string,
   workerId: string,
   leaseMs: number,
-): Promise<boolean> {
+): Promise<{ held: boolean; cancelRequested: boolean }> {
   const rows = await sql`
     update treadle.jobs
     set lease_until = now() + (${leaseMs} * interval '1 millisecond')
     where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-    returning id`;
-  return rows.length === 1;
+    returning cancel_requested`;
+  const row = rows[0] as { cancel_requested: boolean } | undefined;
+  return { held: row !== undefined, cancelRequested: row?.cancel_requested ?? false };
 }
 
 export async function rescueExpired(sql: Sql): Promise<number> {
   const rows = await sql`
-    update treadle.jobs
-    set state = 'retryable', lease_until = null, worker_id = null, last_error = 'lease expired'
-    where state = 'running' and lease_until < now()
-    returning id`;
-  return rows.length;
+    with done as (
+      update treadle.jobs
+      set state = case
+            when cancel_requested then 'cancelled'
+            when attempt >= max_attempts then 'discarded'
+            else 'retryable' end,
+          finished_at = case
+            when cancel_requested or attempt >= max_attempts then now()
+            else finished_at end,
+          -- the worker died, the job did not fail, so no backoff
+          run_at = now(),
+          lease_until = null, worker_id = null, last_error = 'lease expired'
+      where state = 'running' and lease_until < now()
+      returning state, every_ms, queue, name, args, priority, max_attempts
+    ), next as (
+      insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
+      select queue, name, args, priority, max_attempts, every_ms,
+             now() + (every_ms * interval '1 millisecond')
+      from done where every_ms is not null and state = 'discarded'
+    )
+    select count(*)::int as n from done`;
+  return (rows[0]?.n as number) ?? 0;
 }

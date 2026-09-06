@@ -45,4 +45,25 @@ export class Treadle {
       where idempotency_key = ${options.idempotencyKey!}`;
     return existing[0]!.id as string;
   }
+
+  async cancel(jobId: string): Promise<boolean> {
+    const rows = await this.sql`
+      update treadle.jobs
+      set state = case when state = 'running' then state else 'cancelled' end,
+          cancel_requested = case when state = 'running' then true else cancel_requested end,
+          finished_at = case when state = 'running' then finished_at else now() end
+      where id = ${jobId} and state in ('available', 'retryable', 'running')
+      returning id`;
+    return rows.length === 1;
+  }
+
+  async retry(jobId: string): Promise<boolean> {
+    const rows = await this.sql`
+      update treadle.jobs
+      set state = 'available', attempt = 0, run_at = now(), cancel_requested = false,
+          finished_at = null, lease_until = null, worker_id = null
+      where id = ${jobId} and state in ('discarded', 'cancelled', 'retryable')
+      returning id`;
+    return rows.length === 1;
+  }
 }

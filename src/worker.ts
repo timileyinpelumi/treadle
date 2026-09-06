@@ -1,13 +1,13 @@
 import { hostname } from "node:os";
+import { defaultBackoff } from "./backoff";
 import { claimJobs, completeJob, extendLease, failJob, rescueExpired } from "./queries";
 import type { Sql } from "./sql";
 import type { Handler, Job, JobContext, WorkerOptions } from "./types";
 
-const RETRY_DELAY_MS = 1000;
-
 export class Worker {
   readonly id: string;
-  readonly options: Required<Omit<WorkerOptions, "workerId" | "onError">> & {
+  readonly options: Required<Omit<WorkerOptions, "workerId" | "onError" | "backoff">> & {
+    backoff: (attempt: number) => number;
     onError: (error: unknown, job?: Job) => void;
   };
 
@@ -28,6 +28,7 @@ export class Worker {
       heartbeatMs: options.heartbeatMs ?? 10_000,
       rescueIntervalMs: options.rescueIntervalMs ?? 15_000,
       stopTimeoutMs: options.stopTimeoutMs ?? 30_000,
+      backoff: options.backoff ?? defaultBackoff,
       onError: options.onError ?? ((error, job) => console.error("treadle worker error", { jobId: job?.id, error })),
     };
   }
@@ -107,12 +108,12 @@ export class Worker {
     }, this.options.heartbeatMs);
     try {
       await handler(job.args, ctx);
-      const ok = await completeJob(this.sql, job.id, this.id);
-      if (!ok) this.options.onError(new Error("lease lost before completion"), job);
+      const state = await completeJob(this.sql, job.id, this.id);
+      if (state === null) this.options.onError(new Error("lease lost before completion"), job);
     } catch (error) {
       this.options.onError(error, job);
       const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-      await failJob(this.sql, job.id, this.id, message, new Date(Date.now() + RETRY_DELAY_MS))
+      await failJob(this.sql, job.id, this.id, message, this.options.backoff(job.attempt))
         .catch((e) => this.options.onError(e, job));
     } finally {
       clearInterval(beat);
@@ -120,8 +121,10 @@ export class Worker {
   }
 
   private async heartbeat(job: Job, abort: AbortController): Promise<void> {
-    const ok = await extendLease(this.sql, job.id, this.id, this.options.leaseMs);
-    if (!ok && !abort.signal.aborted) abort.abort(new Error("lease lost"));
+    const { held, cancelRequested } = await extendLease(this.sql, job.id, this.id, this.options.leaseMs);
+    if (abort.signal.aborted) return;
+    if (!held) abort.abort(new Error("lease lost"));
+    else if (cancelRequested) abort.abort(new Error("cancelled"));
   }
 
   private sleep(ms: number): Promise<void> {

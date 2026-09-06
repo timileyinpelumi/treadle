@@ -51,8 +51,8 @@ test("completeJob and failJob only apply to the worker holding the lease", async
   const id = await sql.begin((tx) => treadle.enqueue(tx, "a", {}));
   await claimJobs(sql, base);
 
-  expect(await completeJob(sql, id, "someone-else")).toBe(false);
-  expect(await completeJob(sql, id, "w1")).toBe(true);
+  expect(await completeJob(sql, id, "someone-else")).toBeNull();
+  expect(await completeJob(sql, id, "w1")).toBe("completed");
   const [done] = await sql`select state, worker_id, lease_until, finished_at from treadle.jobs where id = ${id}`;
   expect(done?.state).toBe("completed");
   expect(done?.worker_id).toBeNull();
@@ -61,12 +61,11 @@ test("completeJob and failJob only apply to the worker holding the lease", async
 
   const id2 = await sql.begin((tx) => treadle.enqueue(tx, "a", {}));
   await claimJobs(sql, base);
-  const later = new Date(Date.now() + 1000);
-  expect(await failJob(sql, id2, "w1", "boom", later)).toBe(true);
+  expect(await failJob(sql, id2, "w1", "boom", 1000)).toBe("retryable");
   const [failed] = await sql`select state, last_error, run_at, worker_id from treadle.jobs where id = ${id2}`;
   expect(failed?.state).toBe("retryable");
   expect(failed?.last_error).toBe("boom");
-  expect(new Date(failed?.run_at).getTime()).toBe(later.getTime());
+  expect(new Date(failed?.run_at).getTime()).toBeGreaterThan(Date.now() + 500);
   expect(failed?.worker_id).toBeNull();
   await sql.end();
 });
@@ -76,10 +75,10 @@ test("extendLease moves lease_until forward for the holder only", async () => {
   const id = await sql.begin((tx) => treadle.enqueue(tx, "a", {}));
   const [job] = await claimJobs(sql, { ...base, leaseMs: 1000 });
   const before = new Date(job!.lease_until!).getTime();
-  expect(await extendLease(sql, id, "w1", 60_000)).toBe(true);
+  expect(await extendLease(sql, id, "w1", 60_000)).toEqual({ held: true, cancelRequested: false });
   const [row] = await sql`select lease_until from treadle.jobs where id = ${id}`;
   expect(new Date(row?.lease_until).getTime()).toBeGreaterThan(before + 30_000);
-  expect(await extendLease(sql, id, "w2", 60_000)).toBe(false);
+  expect(await extendLease(sql, id, "w2", 60_000)).toEqual({ held: false, cancelRequested: false });
   await sql.end();
 });
 
