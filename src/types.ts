@@ -57,5 +57,6 @@ export interface WorkerOptions {
   rescueIntervalMs?: number;
   stopTimeoutMs?: number;
   workerId?: string;
+  backoff?: (attempt: number) => number;
   onError?: (error: unknown, job?: Job) => void;
 }
