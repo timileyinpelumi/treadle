@@ -60,6 +60,7 @@ test("a failing handler moves the job to retryable with the error", async () => 
 
 test("four workers and 200 jobs: every job completes exactly once", async () => {
   const { sql, treadle } = await setup();
+  await sql`drop table if exists runs`;
   await sql`create table runs (job_id bigint not null)`;
   const workers = Array.from({ length: 4 }, () => {
     const w = new Worker(sql, { pollIntervalMs: 20, concurrency: 5 });
