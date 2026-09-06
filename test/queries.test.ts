@@ -99,3 +99,15 @@ test("rescueExpired returns expired running jobs to retryable and leaves live on
   expect(l?.state).toBe("running");
   await sql.end();
 });
+
+test("claimJobs fills from queues in the order given", async () => {
+  const { sql, treadle } = await setup();
+  const d1 = await sql.begin((tx) => treadle.enqueue(tx, "a", {}, { queue: "default", priority: 0 }));
+  const l1 = await sql.begin((tx) => treadle.enqueue(tx, "a", {}, { queue: "ledger", priority: 9 }));
+  const l2 = await sql.begin((tx) => treadle.enqueue(tx, "a", {}, { queue: "ledger", priority: 1 }));
+  const jobs = await claimJobs(sql, { ...base, queues: ["ledger", "default"], limit: 2 });
+  expect(jobs.map((j) => j.id)).toEqual([l2, l1]);
+  const rest = await claimJobs(sql, { ...base, queues: ["ledger", "default"], limit: 2 });
+  expect(rest.map((j) => j.id)).toEqual([d1]);
+  await sql.end();
+});

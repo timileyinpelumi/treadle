@@ -7,33 +7,42 @@ const columns = `
   j.every_ms, j.workflow_run_id::text as workflow_run_id, j.step_index,
   j.last_error, j.created_at, j.started_at, j.finished_at`;
 
+// One statement per queue. With queue = any(array) Postgres cannot use the claim
+// index for ordering and falls back to a seq scan plus sort over the whole backlog.
 export async function claimJobs(
   sql: Sql,
   args: { queues: string[]; names: string[]; limit: number; leaseMs: number; workerId: string },
 ): Promise<Job[]> {
   if (args.limit < 1 || args.queues.length === 0 || args.names.length === 0) return [];
-  return sql.unsafe(
-    `with next as (
-       select id from treadle.jobs
-       where state in ('available', 'retryable')
-         and queue = any($1::text[])
-         and name = any($2::text[])
-         and run_at <= now()
-       order by priority, run_at
-       limit $3
-       for update skip locked
-     )
-     update treadle.jobs j
-     set state = 'running',
-         attempt = j.attempt + 1,
-         lease_until = now() + ($4 * interval '1 millisecond'),
-         worker_id = $5,
-         started_at = coalesce(j.started_at, now())
-     from next
-     where j.id = next.id
-     returning ${columns}`,
-    [toPgArray(args.queues), toPgArray(args.names), args.limit, args.leaseMs, args.workerId],
-  );
+  const claimed: Job[] = [];
+  for (const queue of args.queues) {
+    const remaining = args.limit - claimed.length;
+    if (remaining < 1) break;
+    const rows: Job[] = await sql.unsafe(
+      `with next as (
+         select id from treadle.jobs
+         where state in ('available', 'retryable')
+           and queue = $1
+           and name = any($2::text[])
+           and run_at <= now()
+         order by priority, run_at
+         limit $3
+         for update skip locked
+       )
+       update treadle.jobs j
+       set state = 'running',
+           attempt = j.attempt + 1,
+           lease_until = now() + ($4 * interval '1 millisecond'),
+           worker_id = $5,
+           started_at = coalesce(j.started_at, now())
+       from next
+       where j.id = next.id
+       returning ${columns}`,
+      [queue, toPgArray(args.names), remaining, args.leaseMs, args.workerId],
+    );
+    claimed.push(...rows);
+  }
+  return claimed;
 }
 
 // Bun sends JS arrays as a bare "a,b" literal, which Postgres rejects. Build the {} form ourselves.
