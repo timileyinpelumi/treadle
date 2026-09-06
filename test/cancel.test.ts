@@ -29,7 +29,7 @@ test("cancel on a finished job does nothing", async () => {
 test("cancel on a running job aborts the signal and the job ends cancelled", async () => {
   const { sql, treadle } = await setup();
   const worker = new Worker(sql, { pollIntervalMs: 20, heartbeatMs: 50, onError: () => {} });
-  let reason: string | null = null;
+  let reason = null as string | null;
   worker.register("watch", async (_args, ctx) => {
     await new Promise<void>((resolve) => {
       ctx.signal.addEventListener("abort", () => {
