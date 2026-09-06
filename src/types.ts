@@ -36,3 +36,26 @@ export interface Job {
   started_at: Date | null;
   finished_at: Date | null;
 }
+
+export interface JobContext {
+  jobId: string;
+  name: string;
+  queue: string;
+  attempt: number;
+  signal: AbortSignal;
+  heartbeat(): Promise<void>;
+}
+
+export type Handler<A = any> = (args: A, ctx: JobContext) => Promise<unknown> | unknown;
+
+export interface WorkerOptions {
+  queues?: string[];
+  concurrency?: number;
+  pollIntervalMs?: number;
+  leaseMs?: number;
+  heartbeatMs?: number;
+  rescueIntervalMs?: number;
+  stopTimeoutMs?: number;
+  workerId?: string;
+  onError?: (error: unknown, job?: Job) => void;
+}

@@ -1,4 +1,5 @@
 export type { Sql } from "./sql";
-export type { EnqueueOptions, Job, JobState } from "./types";
+export type { EnqueueOptions, Handler, Job, JobContext, JobState, WorkerOptions } from "./types";
 export { migrate } from "./migrate";
 export { Treadle } from "./treadle";
+export { Worker } from "./worker";
