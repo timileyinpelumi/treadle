@@ -5,3 +5,5 @@ export { Treadle } from "./treadle";
 export { Worker } from "./worker";
 export { defaultBackoff } from "./backoff";
 export { workflowJobName } from "./workflows";
+export { dashboard } from "./dashboard";
+export type { DashboardOptions } from "./dashboard";

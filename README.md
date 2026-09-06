@@ -2,7 +2,7 @@
 
 Background jobs and step workflows for Bun and Postgres.
 
-Status: milestone 4 of 7. Jobs, retries, cancel and retry, periodic jobs, and step workflows. No dashboard yet. See `docs/scope.md`.
+Status: milestone 5 of 7. Jobs, retries, cancel and retry, periodic jobs, step workflows, and a dashboard. See `docs/scope.md`.
 
 ## Develop
 
@@ -10,3 +10,10 @@ Needs a Postgres reachable at `DATABASE_URL`, default `postgres://postgres:postg
 
     bun install
     bun test
+
+## Dashboard
+
+    import { dashboard } from "treadle";
+    Bun.serve({ fetch: dashboard(sql, { basePath: "/admin/jobs" }) });
+
+Mount it behind your own auth. It shows counts, finished per minute, recent failures with retry and cancel, and workflow runs with their steps. `#run=<id>` in the URL opens that run.
