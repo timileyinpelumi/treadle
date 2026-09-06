@@ -19,7 +19,7 @@ export async function overview(sql: Sql): Promise<{ counts: CountRow[]; perMinut
     select queue, state, count(*)::int as n from treadle.jobs
     group by queue, state order by queue, state`;
   const perMinute = await sql`
-    select to_char(date_trunc('minute', finished_at), 'YYYY-MM-DD"T"HH24:MI:00"Z"') as minute, state, count(*)::int as n
+    select to_char(date_trunc('minute', finished_at at time zone 'UTC'), 'YYYY-MM-DD"T"HH24:MI:00"Z"') as minute, state, count(*)::int as n
     from treadle.jobs
     where finished_at > now() - interval '1 hour' and state in ('completed', 'discarded')
     group by 1, 2 order by 1, 2`;
