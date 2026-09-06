@@ -2,7 +2,7 @@
 
 Background jobs and step workflows for Bun and Postgres.
 
-Status: milestone 3 of 7. Jobs, retries with backoff, cancel and retry, scheduled and periodic jobs. No workflows or dashboard yet. See `docs/scope.md`.
+Status: milestone 4 of 7. Jobs, retries, cancel and retry, periodic jobs, and step workflows. No dashboard yet. See `docs/scope.md`.
 
 ## Develop
 

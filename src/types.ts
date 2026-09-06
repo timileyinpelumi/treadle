@@ -60,3 +60,15 @@ export interface WorkerOptions {
   backoff?: (attempt: number) => number;
   onError?: (error: unknown, job?: Job) => void;
 }
+
+export interface StartWorkflowOptions {
+  queue?: string;
+  priority?: number;
+  maxAttempts?: number;
+  idempotencyKey?: string;
+}
+
+export interface Step<I = any> {
+  name: string;
+  run: (input: I, results: Record<string, unknown>, ctx: JobContext) => Promise<unknown> | unknown;
+}

@@ -53,12 +53,17 @@ export async function completeJob(sql: Sql, jobId: string, workerId: string): Pr
       set state = case when cancel_requested then 'cancelled' else 'completed' end,
           finished_at = now(), lease_until = null, worker_id = null
       where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-      returning state, every_ms, queue, name, args, priority, max_attempts
+      returning state, every_ms, queue, name, args, priority, max_attempts, workflow_run_id
     ), next as (
       insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
       select queue, name, args, priority, max_attempts, every_ms,
              now() + (every_ms * interval '1 millisecond')
       from done where every_ms is not null and state = 'completed'
+    ), run as (
+      update treadle.workflow_runs w
+      set state = 'cancelled', finished_at = now()
+      from done
+      where w.id = done.workflow_run_id and done.state = 'cancelled' and w.state = 'running'
     )
     select state from done`;
   return (rows[0]?.state as FinalState | undefined) ?? null;
@@ -87,12 +92,18 @@ export async function failJob(
             else null end,
           lease_until = null, worker_id = null
       where id = ${jobId} and state = 'running' and worker_id = ${workerId}
-      returning state, every_ms, queue, name, args, priority, max_attempts
+      returning state, every_ms, queue, name, args, priority, max_attempts, workflow_run_id
     ), next as (
       insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
       select queue, name, args, priority, max_attempts, every_ms,
              now() + (every_ms * interval '1 millisecond')
       from done where every_ms is not null and state = 'discarded'
+    ), run as (
+      update treadle.workflow_runs w
+      set state = case done.state when 'discarded' then 'failed' else 'cancelled' end,
+          finished_at = now()
+      from done
+      where w.id = done.workflow_run_id and done.state in ('discarded', 'cancelled') and w.state = 'running'
     )
     select state from done`;
   return (rows[0]?.state as FinalState | undefined) ?? null;
@@ -128,12 +139,18 @@ export async function rescueExpired(sql: Sql): Promise<number> {
           run_at = now(),
           lease_until = null, worker_id = null, last_error = 'lease expired'
       where state = 'running' and lease_until < now()
-      returning state, every_ms, queue, name, args, priority, max_attempts
+      returning state, every_ms, queue, name, args, priority, max_attempts, workflow_run_id
     ), next as (
       insert into treadle.jobs (queue, name, args, priority, max_attempts, every_ms, run_at)
       select queue, name, args, priority, max_attempts, every_ms,
              now() + (every_ms * interval '1 millisecond')
       from done where every_ms is not null and state = 'discarded'
+    ), run as (
+      update treadle.workflow_runs w
+      set state = case done.state when 'discarded' then 'failed' else 'cancelled' end,
+          finished_at = now()
+      from done
+      where w.id = done.workflow_run_id and done.state in ('discarded', 'cancelled') and w.state = 'running'
     )
     select count(*)::int as n from done`;
   return (rows[0]?.n as number) ?? 0;
