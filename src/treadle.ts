@@ -1,5 +1,6 @@
 import type { Sql } from "./sql";
-import type { EnqueueOptions } from "./types";
+import type { EnqueueOptions, StartWorkflowOptions } from "./types";
+import { cancelWorkflowRun, startWorkflowRun } from "./workflows";
 
 export class Treadle {
   constructor(readonly sql: Sql) {}
@@ -59,11 +60,36 @@ export class Treadle {
 
   async retry(jobId: string): Promise<boolean> {
     const rows = await this.sql`
-      update treadle.jobs
-      set state = 'available', attempt = 0, run_at = now(), cancel_requested = false,
-          finished_at = null, lease_until = null, worker_id = null
-      where id = ${jobId} and state in ('discarded', 'cancelled', 'retryable')
-      returning id`;
+      with j as (
+        update treadle.jobs
+        set state = 'available', attempt = 0, run_at = now(), cancel_requested = false,
+            finished_at = null, lease_until = null, worker_id = null
+        where id = ${jobId} and state in ('discarded', 'cancelled', 'retryable')
+        returning id, workflow_run_id
+      ), run as (
+        update treadle.workflow_runs w
+        set state = 'running', finished_at = null
+        from j
+        where w.id = j.workflow_run_id and w.state in ('failed', 'cancelled')
+      )
+      select id from j`;
     return rows.length === 1;
+  }
+
+  async startWorkflow(
+    tx: Sql,
+    name: string,
+    input: unknown = {},
+    options: StartWorkflowOptions = {},
+  ): Promise<string> {
+    if (!name) throw new Error("startWorkflow: name is required");
+    if (input !== null && typeof input !== "object") {
+      throw new Error("startWorkflow: input must be an object, an array, or null");
+    }
+    return startWorkflowRun(tx, name, input, options);
+  }
+
+  async cancelWorkflow(runId: string): Promise<boolean> {
+    return cancelWorkflowRun(this.sql, runId);
   }
 }
