@@ -26,7 +26,7 @@ export const migrations: ReadonlyArray<{ version: number; sql: string }> = [
       );
 
       create index jobs_claim_idx on treadle.jobs (queue, priority, run_at)
-        where state = 'available';
+        where state in ('available', 'retryable');
 
       create index jobs_rescue_idx on treadle.jobs (lease_until)
         where state = 'running';
