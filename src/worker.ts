@@ -2,16 +2,17 @@ import { hostname } from "node:os";
 import { defaultBackoff } from "./backoff";
 import { claimJobs, completeJob, extendLease, failJob, rescueExpired } from "./queries";
 import type { Sql } from "./sql";
-import type { Handler, Job, JobContext, Step, WorkerOptions } from "./types";
+import type { Handler, Job, JobContext, Step, WorkerEvent, WorkerOptions } from "./types";
 import { loadRun, stepDone, workflowJobName } from "./workflows";
 
 type InternalHandler = (job: Job, ctx: JobContext) => Promise<unknown>;
 
 export class Worker {
   readonly id: string;
-  readonly options: Required<Omit<WorkerOptions, "workerId" | "onError" | "backoff">> & {
+  readonly options: Required<Omit<WorkerOptions, "workerId" | "onError" | "backoff" | "onEvent">> & {
     backoff: (attempt: number) => number;
     onError: (error: unknown, job?: Job) => void;
+    onEvent: (event: WorkerEvent, job: Job) => void;
   };
 
   private handlers = new Map<string, InternalHandler>();
@@ -32,6 +33,7 @@ export class Worker {
       rescueIntervalMs: options.rescueIntervalMs ?? 15_000,
       stopTimeoutMs: options.stopTimeoutMs ?? 30_000,
       backoff: options.backoff ?? defaultBackoff,
+      onEvent: options.onEvent ?? (() => {}),
       onError: options.onError ?? ((error, job) => console.error("treadle worker error", { jobId: job?.id, error })),
     };
   }
@@ -81,6 +83,15 @@ export class Worker {
       result: result === undefined ? null : result,
       isLast: index === steps.length - 1,
     });
+    this.emit("stepFinished", job);
+  }
+
+  private emit(event: WorkerEvent, job: Job): void {
+    try {
+      this.options.onEvent(event, job);
+    } catch (e) {
+      this.options.onError(e, job);
+    }
   }
 
   async start(): Promise<void> {
@@ -117,7 +128,10 @@ export class Worker {
             workerId: this.id,
           });
           claimed = jobs.length;
-          for (const job of jobs) this.track(job);
+          for (const job of jobs) {
+            this.emit("claimed", job);
+            this.track(job);
+          }
         } catch (e) {
           this.options.onError(e);
         }
@@ -152,12 +166,19 @@ export class Worker {
     }, this.options.heartbeatMs);
     try {
       await handler(job, ctx);
+      this.emit("finishing", job);
       const state = await completeJob(this.sql, job.id, this.id);
-      if (state === null) this.options.onError(new Error("lease lost before completion"), job);
+      if (state === null) {
+        this.emit("leaseLost", job);
+        this.options.onError(new Error("lease lost before completion"), job);
+      } else {
+        this.emit("completed", job);
+      }
     } catch (error) {
       this.options.onError(error, job);
       const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
       await failJob(this.sql, job.id, this.id, message, this.options.backoff(job.attempt))
+        .then(() => this.emit("failed", job))
         .catch((e) => this.options.onError(e, job));
     } finally {
       clearInterval(beat);
