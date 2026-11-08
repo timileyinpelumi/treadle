@@ -1,6 +1,6 @@
 {
   "name": "treadle",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Background jobs and step workflows for Bun and Postgres",
   "type": "module",
   "exports": {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Rewrote the README. No code changes.
+
 ## 0.1.0
 
 First release.
