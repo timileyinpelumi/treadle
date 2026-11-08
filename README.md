@@ -1,6 +1,6 @@
 # Treadle
 
-Background jobs and step workflows for Bun and Postgres. One table, no broker, no build step.
+Background jobs and step workflows for Bun and Postgres. Jobs live in one table and commit inside your own transaction, so you can run a queue on the database you already have.
 
     bun add treadle
 
